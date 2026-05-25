@@ -1,15 +1,18 @@
 import 'dart:async';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../app/colors.dart';
 import '../../shared/storage/local_storage.dart';
-import 'logic/path_generator.dart';
-import 'models/difficulty.dart';
-import 'models/puzzle.dart';
+import 'logic/freedom_checker.dart';
+import 'logic/puzzle_generator.dart';
+import 'models/arrow_model.dart';
+import 'models/puzzle_model.dart';
+import 'widgets/arrow_painter.dart';
 import 'widgets/brilliant_overlay.dart';
-import 'widgets/dot_grid_painter.dart';
 import 'widgets/hearts_widget.dart';
+
+// Escape animation speed (pixels per second)
+const _kEscapeSpeed = 500.0;
 
 class GameScreen extends StatefulWidget {
   final int level;
@@ -19,34 +22,29 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   static const int _maxHearts = 3;
 
-  late Puzzle _puzzle;
-  late Difficulty _difficulty;
-  int _progress = 0; // correctly traced segments
+  late PuzzleModel _puzzle;
   int _hearts = _maxHearts;
   bool _solved = false;
-  bool _gameOver = false;
+  bool _inputFrozen = false; // true during flash-error (500 ms)
 
-  // Wrong-move flash
-  (int, int)? _wrongFrom;
-  (int, int)? _wrongTo;
+  // Flash-error state
+  int? _flashId;
   Timer? _flashTimer;
 
-  // Drag state
-  bool _isTracing = false;
-  (int, int)? _lastDot;
-  bool _wrongCooldown = false; // prevents rapid repeated deductions
+  // Escape animations: arrowId → controller
+  final Map<int, AnimationController> _escapeCtrl = {};
+  final Map<int, double> _escapeOffsets = {}; // pixels slid so far
 
   // Timer
   int _seconds = 0;
   Timer? _ticker;
 
   // Grid metrics (computed in build)
-  double _gridSize = 0;
-  double _cellW = 0;
-  double _cellH = 0;
+  GridMetrics? _metrics;
+  double _boardSize = 0;
 
   @override
   void initState() {
@@ -58,121 +56,112 @@ class _GameScreenState extends State<GameScreen> {
   void dispose() {
     _flashTimer?.cancel();
     _ticker?.cancel();
+    for (final c in _escapeCtrl.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  // ── Level management ───────────────────────────────────────────────────────
+  // ── Level lifecycle ──────────────────────────────────────────────────────────
 
   void _loadLevel(int level) {
-    _difficulty = Difficulty.forLevel(level);
-    _puzzle = PathGenerator.generate(_difficulty, seed: level * 7919);
-    _progress = 0;
+    _puzzle = generatePuzzle(level);
     _hearts = _maxHearts;
     _solved = false;
-    _gameOver = false;
-    _isTracing = false;
-    _lastDot = null;
-    _wrongFrom = null;
-    _wrongTo = null;
+    _inputFrozen = false;
+    _flashId = null;
+    _flashTimer?.cancel();
+    for (final c in _escapeCtrl.values) {
+      c.dispose();
+    }
+    _escapeCtrl.clear();
+    _escapeOffsets.clear();
     _seconds = 0;
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!_solved && !_gameOver) setState(() => _seconds++);
+      if (!_solved) setState(() => _seconds++);
     });
   }
 
-  // ── Drag / snap logic ──────────────────────────────────────────────────────
+  // ── Tap handler ──────────────────────────────────────────────────────────────
 
-  (int, int) _snapToDot(Offset local) {
-    final c = (local.dx / _cellW - 0.5).round().clamp(0, _puzzle.cols - 1);
-    final r = (local.dy / _cellH - 0.5).round().clamp(0, _puzzle.rows - 1);
-    return (r, c);
-  }
+  void _onBoardTap(Offset localPos) {
+    if (_inputFrozen || _solved) return;
+    final metrics = _metrics;
+    if (metrics == null) return;
 
-  void _onPanStart(DragStartDetails d) {
-    if (_solved || _gameOver) return;
-    final dot = _snapToDot(d.localPosition);
-    final startDot = _puzzle.startDot;
-    final leadDot = _puzzle.path[_progress];
+    final hit = metrics.hitTest(localPos);
+    if (hit == null) return;
+    final (tapCol, tapRow) = hit;
 
-    if (dot == startDot) {
-      setState(() => _progress = 0);
-      _lastDot = dot;
-      _isTracing = true;
-    } else if (dot == leadDot) {
-      _lastDot = dot;
-      _isTracing = true;
-    } else {
-      _isTracing = false;
-    }
-  }
-
-  void _onPanUpdate(DragUpdateDetails d) {
-    if (!_isTracing || _solved || _gameOver) return;
-    final dot = _snapToDot(d.localPosition);
-    if (dot == _lastDot) return; // still on same dot
-
-    final prevDot = _lastDot;
-    _lastDot = dot;
-
-    final leadDot = _puzzle.path[_progress];
-
-    if (dot == leadDot) return; // moved back to current lead (no-op)
-
-    final hasNext = _progress < _puzzle.segmentCount;
-    final nextDot = hasNext ? _puzzle.path[_progress + 1] : null;
-    final hasPrev = _progress > 0;
-    final prevCorrect = hasPrev ? _puzzle.path[_progress - 1] : null;
-
-    if (dot == nextDot) {
-      // Correct segment traced
-      HapticFeedback.selectionClick();
-      setState(() {
-        _progress++;
-        _wrongFrom = null;
-        _wrongTo = null;
-      });
-      if (_progress == _puzzle.segmentCount) _onSolved();
-    } else if (dot == prevCorrect) {
-      // Undo last correct step
-      setState(() => _progress--);
-    } else {
-      // Wrong move
-      if (!_wrongCooldown) {
-        _wrongCooldown = true;
-        HapticFeedback.mediumImpact();
-        final from = prevDot ?? leadDot;
-        setState(() {
-          _wrongFrom = from;
-          _wrongTo = dot;
-          _hearts--;
-        });
-        _flashTimer?.cancel();
-        _flashTimer = Timer(const Duration(milliseconds: 350), () {
-          if (mounted) {
-            setState(() {
-              _wrongFrom = null;
-              _wrongTo = null;
-            });
-          }
-          _wrongCooldown = false;
-        });
-
-        if (_hearts <= 0) {
-          _ticker?.cancel();
-          Future.delayed(const Duration(milliseconds: 400), _showOutOfLives);
-        }
+    // Find which arrow was tapped (any cell of its body)
+    final arrow = _puzzle.arrows.where((a) {
+      if (a.status == ArrowStatus.freed || a.status == ArrowStatus.animating) {
+        return false;
       }
+      return a.cells.any((cell) => cell.$1 == tapCol && cell.$2 == tapRow);
+    }).firstOrNull;
+
+    if (arrow == null) return;
+
+    if (canFree(arrow, _puzzle.arrows, _puzzle.cols, _puzzle.rows)) {
+      _startEscape(arrow);
+    } else {
+      _triggerFlash(arrow);
     }
   }
 
-  void _onPanEnd(DragEndDetails _) {
-    _isTracing = false;
+  // ── Correct tap: escape animation ───────────────────────────────────────────
+
+  void _startEscape(ArrowModel arrow) {
+    HapticFeedback.selectionClick();
+
+    setState(() {
+      arrow.status = ArrowStatus.animating;
+    });
+
+    // Compute how far the arrow needs to travel to go fully off-screen
+    final metrics = _metrics;
+    final cellSize = metrics?.cellSize ?? 40.0;
+    final distanceCells = switch (arrow.dir) {
+      ArrowDir.right => _puzzle.cols - arrow.headCol,
+      ArrowDir.left => arrow.headCol + arrow.len,
+      ArrowDir.up => arrow.headRow + arrow.len,
+      ArrowDir.down => _puzzle.rows - arrow.headRow,
+    };
+    final totalPx = distanceCells * cellSize + cellSize;
+    final duration = Duration(
+      milliseconds: (totalPx / _kEscapeSpeed * 1000).round().clamp(200, 800),
+    );
+
+    final ctrl = AnimationController(vsync: this, duration: duration);
+    _escapeCtrl[arrow.id] = ctrl;
+
+    ctrl.addListener(() {
+      setState(() {
+        _escapeOffsets[arrow.id] = ctrl.value * totalPx;
+      });
+    });
+
+    ctrl.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        setState(() {
+          arrow.status = ArrowStatus.freed;
+          _escapeOffsets.remove(arrow.id);
+        });
+        ctrl.dispose();
+        _escapeCtrl.remove(arrow.id);
+        _checkSolved();
+      }
+    });
+
+    ctrl.forward();
   }
 
-  // ── Solve / game over ──────────────────────────────────────────────────────
+  void _checkSolved() async {
+    final allFreed = _puzzle.arrows.every((a) => a.status == ArrowStatus.freed);
+    if (!allFreed) return;
 
-  void _onSolved() async {
     _ticker?.cancel();
     HapticFeedback.heavyImpact();
     final isNew = widget.level >= LocalStorage.currentLevel;
@@ -180,8 +169,36 @@ class _GameScreenState extends State<GameScreen> {
     if (mounted) setState(() => _solved = true);
   }
 
+  // ── Blocked tap: flash error ─────────────────────────────────────────────────
+
+  void _triggerFlash(ArrowModel arrow) {
+    HapticFeedback.mediumImpact();
+    _inputFrozen = true;
+
+    setState(() {
+      arrow.status = ArrowStatus.flashError;
+      _flashId = arrow.id;
+      _hearts--;
+    });
+
+    _flashTimer?.cancel();
+    _flashTimer = Timer(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
+      setState(() {
+        arrow.status = ArrowStatus.locked;
+        _flashId = null;
+        _inputFrozen = false;
+      });
+      if (_hearts <= 0) {
+        _ticker?.cancel();
+        _showOutOfLives();
+      }
+    });
+  }
+
+  // ── Dialogs ──────────────────────────────────────────────────────────────────
+
   void _showOutOfLives() {
-    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -190,8 +207,7 @@ class _GameScreenState extends State<GameScreen> {
           Navigator.pop(context);
           setState(() {
             _hearts = _maxHearts;
-            _gameOver = false;
-            _wrongCooldown = false;
+            _inputFrozen = false;
             _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
               if (!_solved) setState(() => _seconds++);
             });
@@ -205,7 +221,7 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  // ── Timer label ────────────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────────
 
   String get _timeLabel {
     final m = _seconds ~/ 60;
@@ -213,15 +229,27 @@ class _GameScreenState extends State<GameScreen> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
-  // ── Build ──────────────────────────────────────────────────────────────────
+  String get _difficultyLabel {
+    if (widget.level <= 5) return 'Tutorial';
+    if (widget.level <= 20) return 'Easy';
+    if (widget.level <= 50) return 'Medium';
+    return 'Hard';
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
     final screenH = MediaQuery.of(context).size.height;
-    _gridSize = min(screenW - 32, screenH * 0.58).clamp(200.0, 440.0);
-    _cellW = _gridSize / _puzzle.cols;
-    _cellH = _gridSize / _puzzle.rows;
+    _boardSize = (screenW - 32)
+        .clamp(200.0, screenH * 0.60)
+        .clamp(200.0, 440.0);
+    _metrics = GridMetrics.fit(
+      Size(_boardSize, _boardSize),
+      _puzzle.cols,
+      _puzzle.rows,
+    );
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -232,25 +260,26 @@ class _GameScreenState extends State<GameScreen> {
               children: [
                 _Header(
                   level: widget.level,
-                  difficulty: _difficulty.label,
+                  difficulty: _difficultyLabel,
                   timeLabel: _timeLabel,
                   onBack: () => Navigator.pop(context),
                   onRestart: () => setState(() => _loadLevel(widget.level)),
                 ),
                 const SizedBox(height: 12),
                 HeartsWidget(hearts: _hearts),
-                const SizedBox(height: 16),
-                // Dot grid
-                Center(
+                const SizedBox(height: 20),
+                // Board
+                GestureDetector(
+                  onTapDown: (d) => _onBoardTap(d.localPosition),
                   child: Container(
-                    width: _gridSize,
-                    height: _gridSize,
+                    width: _boardSize,
+                    height: _boardSize,
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: const [
                         BoxShadow(
-                          color: Color(0x12000000),
+                          color: Color(0x14000000),
                           blurRadius: 20,
                           offset: Offset(0, 6),
                         ),
@@ -258,40 +287,38 @@ class _GameScreenState extends State<GameScreen> {
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(16),
-                      child: GestureDetector(
-                        onPanStart: _onPanStart,
-                        onPanUpdate: _onPanUpdate,
-                        onPanEnd: _onPanEnd,
-                        child: CustomPaint(
-                          size: Size(_gridSize, _gridSize),
-                          painter: DotGridPainter(
-                            rows: _puzzle.rows,
-                            cols: _puzzle.cols,
-                            path: _puzzle.path,
-                            playerProgress: _progress,
-                            wrongFrom: _wrongFrom,
-                            wrongTo: _wrongTo,
-                          ),
+                      child: CustomPaint(
+                        size: Size(_boardSize, _boardSize),
+                        painter: BoardPainter(
+                          cols: _puzzle.cols,
+                          rows: _puzzle.rows,
+                          arrows: _puzzle.arrows,
+                          escapeOffsets: _escapeOffsets,
+                          flashId: _flashId,
                         ),
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(height: 20),
-                _Legend(),
+                Text(
+                  '${_puzzle.arrows.where((a) => a.status != ArrowStatus.freed).length} arrows remaining',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textGrey,
+                  ),
+                ),
               ],
             ),
-            // Brilliant overlay
             if (_solved)
               BrilliantOverlay(
                 level: widget.level,
-                onContinue: () {
-                  final next = widget.level + 1;
-                  Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(builder: (_) => GameScreen(level: next)),
-                  );
-                },
+                onContinue: () => Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => GameScreen(level: widget.level + 1),
+                  ),
+                ),
               ),
           ],
         ),
@@ -300,7 +327,7 @@ class _GameScreenState extends State<GameScreen> {
   }
 }
 
-// ── Header ─────────────────────────────────────────────────────────────────
+// ── Header ────────────────────────────────────────────────────────────────────
 
 class _Header extends StatelessWidget {
   final int level;
@@ -377,52 +404,7 @@ class _Header extends StatelessWidget {
   }
 }
 
-// ── Legend ─────────────────────────────────────────────────────────────────
-
-class _Legend extends StatelessWidget {
-  const _Legend();
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        _Dot(color: AppColors.primary, label: 'Start'),
-        const SizedBox(width: 20),
-        _Dot(color: const Color(0xFF16A34A), label: 'End'),
-        const SizedBox(width: 20),
-        _Dot(color: const Color(0xFFEF4444), label: 'Wrong'),
-      ],
-    );
-  }
-}
-
-class _Dot extends StatelessWidget {
-  final Color color;
-  final String label;
-  const _Dot({required this.color, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 5),
-        Text(
-          label,
-          style: const TextStyle(fontSize: 11, color: AppColors.textGrey),
-        ),
-      ],
-    );
-  }
-}
-
-// ── Out of lives dialog ─────────────────────────────────────────────────────
+// ── Out of lives dialog ───────────────────────────────────────────────────────
 
 class _OutOfLivesDialog extends StatelessWidget {
   final VoidCallback onAddLives;
@@ -442,7 +424,7 @@ class _OutOfLivesDialog extends StatelessWidget {
             const Icon(
               Icons.favorite_border_rounded,
               size: 48,
-              color: Color(0xFFEF4444),
+              color: Color(0xFFE05252),
             ),
             const SizedBox(height: 12),
             const Text(
