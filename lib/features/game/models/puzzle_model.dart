@@ -13,20 +13,14 @@ class PuzzleModel {
     this.shapeName = '',
   });
 
-  /// Deep copy with fresh arrow instances.
   PuzzleModel clone() => PuzzleModel(
     cols: cols,
     rows: rows,
     shapeName: shapeName,
     arrows: arrows
         .map(
-          (a) => ArrowModel(
-            id: a.id,
-            col: a.col,
-            row: a.row,
-            dir: a.dir,
-            len: a.len,
-          ),
+          (a) =>
+              ArrowModel(id: a.id, path: List.of(a.path), headDir: a.headDir),
         )
         .toList(),
   );

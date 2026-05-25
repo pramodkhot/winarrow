@@ -57,8 +57,8 @@ class BoardPainter extends CustomPainter {
   final int cols;
   final int rows;
   final List<ArrowModel> arrows;
-  final Map<int, double> escapeOffsets; // id → pixels slid so far
-  final int? flashId; // arrow id currently flashing red
+  final Map<int, double> escapeOffsets;
+  final int? flashId;
 
   const BoardPainter({
     required this.cols,
@@ -82,7 +82,7 @@ class BoardPainter extends CustomPainter {
     final dotPaint = Paint()..color = kColorDotTrack;
     for (int c = 0; c < cols; c++) {
       for (int r = 0; r < rows; r++) {
-        canvas.drawCircle(m.center(c, r), m.cellSize * 0.07, dotPaint);
+        canvas.drawCircle(m.center(c, r), m.cellSize * 0.06, dotPaint);
       }
     }
 
@@ -95,7 +95,7 @@ class BoardPainter extends CustomPainter {
 
   void _drawArrow(Canvas canvas, ArrowModel arrow, GridMetrics m) {
     final isFlash = arrow.id == flashId;
-    Color color;
+    final Color color;
     if (isFlash) {
       color = kColorArrowBlocked;
     } else if (arrow.status == ArrowStatus.animating) {
@@ -104,7 +104,7 @@ class BoardPainter extends CustomPainter {
       color = kColorArrowDefault;
     }
 
-    final (dx, dy) = arrow.dir.vector;
+    final (dx, dy) = arrow.headDir.vector;
     double slideX = 0, slideY = 0;
     if (arrow.status == ArrowStatus.animating) {
       final offset = escapeOffsets[arrow.id] ?? 0;
@@ -112,29 +112,42 @@ class BoardPainter extends CustomPainter {
       slideY = dy * offset;
     }
 
-    final tailCenter = m.center(arrow.col, arrow.row).translate(slideX, slideY);
-    final headCenter = m
-        .center(arrow.headCol, arrow.headRow)
-        .translate(slideX, slideY);
-
-    // Dot-rail for this arrow's track
+    // Dot-rail in head direction (escape path hint)
     _drawDotRail(canvas, arrow, m, slideX, slideY);
 
-    // Stroke (body line)
-    canvas.drawLine(
-      tailCenter,
-      headCenter,
+    // Snake body: connected line segments through all path cells
+    final bodyPath = Path();
+    for (int i = 0; i < arrow.cells.length; i++) {
+      final pt = m
+          .center(arrow.cells[i].$1, arrow.cells[i].$2)
+          .translate(slideX, slideY);
+      if (i == 0) {
+        bodyPath.moveTo(pt.dx, pt.dy);
+      } else {
+        bodyPath.lineTo(pt.dx, pt.dy);
+      }
+    }
+    canvas.drawPath(
+      bodyPath,
       Paint()
         ..color = color
         ..strokeWidth = m.cellSize * 0.045
-        ..strokeCap = StrokeCap.round,
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke,
     );
 
-    // Tail dot
-    canvas.drawCircle(tailCenter, m.cellSize * 0.055, Paint()..color = color);
+    // Tail dot (filled circle at start of path)
+    final tailPt = m
+        .center(arrow.tail.$1, arrow.tail.$2)
+        .translate(slideX, slideY);
+    canvas.drawCircle(tailPt, m.cellSize * 0.055, Paint()..color = color);
 
-    // Arrowhead triangle at head
-    _drawHead(canvas, headCenter, arrow.dir, m.cellSize, color);
+    // Arrowhead at head cell, pointing in headDir
+    final headPt = m
+        .center(arrow.headCol, arrow.headRow)
+        .translate(slideX, slideY);
+    _drawHead(canvas, headPt, arrow.headDir, m.cellSize, color);
   }
 
   void _drawDotRail(
@@ -144,15 +157,14 @@ class BoardPainter extends CustomPainter {
     double slideX,
     double slideY,
   ) {
-    // Dots between head and board edge (escape path)
-    final (dx, dy) = arrow.dir.vector;
+    final (dx, dy) = arrow.headDir.vector;
     int c = arrow.headCol + dx;
     int r = arrow.headRow + dy;
     final railPaint = Paint()..color = kColorDotTrack;
     while (c >= 0 && c < cols && r >= 0 && r < rows) {
       canvas.drawCircle(
         m.center(c, r).translate(slideX, slideY),
-        m.cellSize * 0.09,
+        m.cellSize * 0.08,
         railPaint,
       );
       c += dx;
@@ -178,14 +190,14 @@ class BoardPainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
 
-    final hs = cell * 0.11; // half-size of head
-    final path = Path()
-      ..moveTo(hs * 1.4, 0)
-      ..lineTo(-hs * 0.4, -hs)
-      ..lineTo(-hs * 0.4, hs)
+    final hs = cell * 0.13;
+    final arrowPath = Path()
+      ..moveTo(hs * 1.5, 0)
+      ..lineTo(-hs * 0.5, -hs)
+      ..lineTo(-hs * 0.5, hs)
       ..close();
 
-    canvas.drawPath(path, Paint()..color = color);
+    canvas.drawPath(arrowPath, Paint()..color = color);
     canvas.restore();
   }
 

@@ -9,15 +9,42 @@ class _Tier {
   final int gridSize;
   final int minArrows;
   final int maxArrows;
-  final int maxLen;
-  const _Tier(this.gridSize, this.minArrows, this.maxArrows, this.maxLen);
+  final int minLen; // min snake body length (cells)
+  final int maxLen; // max snake body length (cells)
+  const _Tier(
+    this.gridSize,
+    this.minArrows,
+    this.maxArrows,
+    this.minLen,
+    this.maxLen,
+  );
 }
 
+// Larger grids + longer snakes = dense, complex-looking boards from level 1.
+// Grid fill targets ~65–75%. Arrow body 3–7 cells gives winding L/S/Z shapes.
 const _tiers = [
-  _Tier(6, 10, 15, 2), // tutorial
-  _Tier(8, 18, 26, 3), // easy
-  _Tier(10, 30, 48, 4), // medium
-  _Tier(12, 50, 80, 5), // hard
+  _Tier(8, 14, 20, 3, 5), // tutorial : 8×8  = 64 cells, ~15 arrows × 4 avg = 60
+  _Tier(
+    10,
+    22,
+    30,
+    4,
+    6,
+  ), // easy     : 10×10= 100 cells, ~26 arrows × 5 avg = 130 → pack ~70
+  _Tier(
+    12,
+    30,
+    42,
+    4,
+    7,
+  ), // medium   : 12×12= 144 cells, ~36 arrows × 5 avg = 180 → pack ~70
+  _Tier(
+    14,
+    42,
+    58,
+    4,
+    7,
+  ), // hard     : 14×14= 196 cells, ~50 arrows × 5 avg = 250 → pack ~70
 ];
 
 _Tier _tierForLevel(int level) {
@@ -38,9 +65,7 @@ PuzzleModel generatePuzzle(int level) {
     final puzzle = _tryBuild(tier, rng);
     if (puzzle != null && isSolvable(puzzle)) return puzzle;
   }
-
-  // Fallback: guaranteed trivial puzzle (all arrows immediately free)
-  return _trivialFallback(tier, rng);
+  return _trivialFallback(tier);
 }
 
 // ── Generator internals ───────────────────────────────────────────────────────
@@ -50,62 +75,113 @@ PuzzleModel? _tryBuild(_Tier tier, Random rng) {
   final rows = tier.gridSize;
   final targetCount =
       tier.minArrows + rng.nextInt(tier.maxArrows - tier.minArrows + 1);
-  final occupied = <int>{}; // col * 1000 + row
+  final occupied = <int>{}; // cells claimed by placed arrows
   final arrows = <ArrowModel>[];
 
   for (
     int attempt = 0;
-    attempt < 2000 && arrows.length < targetCount;
+    attempt < 4000 && arrows.length < targetCount;
     attempt++
   ) {
-    final dir = ArrowDir.values[rng.nextInt(4)];
-    final len = 1 + rng.nextInt(tier.maxLen);
-    final (dx, dy) = dir.vector;
+    final startCol = rng.nextInt(cols);
+    final startRow = rng.nextInt(rows);
+    if (occupied.contains(startCol * 1000 + startRow)) continue;
 
-    // Compute valid tail positions so the arrow fits inside the grid
-    final maxCol = cols - 1 - (dx > 0 ? dx * (len - 1) : 0);
-    final minCol = dx < 0 ? -dx * (len - 1) : 0;
-    final maxRow = rows - 1 - (dy > 0 ? dy * (len - 1) : 0);
-    final minRow = dy < 0 ? -dy * (len - 1) : 0;
-
-    if (maxCol < minCol || maxRow < minRow) continue;
-
-    final col = minCol + rng.nextInt(maxCol - minCol + 1);
-    final row = minRow + rng.nextInt(maxRow - minRow + 1);
-
-    // Check for overlap
-    bool overlaps = false;
-    final cells = <int>[];
-    for (int s = 0; s < len; s++) {
-      final key = (col + dx * s) * 1000 + (row + dy * s);
-      if (occupied.contains(key)) {
-        overlaps = true;
-        break;
-      }
-      cells.add(key);
-    }
-    if (overlaps) continue;
-
-    occupied.addAll(cells);
-    arrows.add(
-      ArrowModel(id: arrows.length, col: col, row: row, dir: dir, len: len),
+    final targetLen = tier.minLen + rng.nextInt(tier.maxLen - tier.minLen + 1);
+    final path = _buildSnakePath(
+      startCol,
+      startRow,
+      rng,
+      cols,
+      rows,
+      targetLen,
+      occupied,
     );
+    if (path.length < 2) continue;
+
+    final headDir = _stepDir(path[path.length - 2], path.last);
+    for (final (c, r) in path) {
+      occupied.add(c * 1000 + r);
+    }
+    arrows.add(ArrowModel(id: arrows.length, path: path, headDir: headDir));
   }
 
   if (arrows.length < tier.minArrows) return null;
   return PuzzleModel(cols: cols, rows: rows, arrows: arrows);
 }
 
-PuzzleModel _trivialFallback(_Tier tier, Random rng) {
+/// Grow a snake path starting at (startCol, startRow).
+/// Checks [occupied] (other arrows) AND self-cells to avoid overlap.
+/// Prefers continuing in the same direction 65 % of the time for longer runs.
+List<(int, int)> _buildSnakePath(
+  int startCol,
+  int startRow,
+  Random rng,
+  int cols,
+  int rows,
+  int targetLen,
+  Set<int> occupied,
+) {
+  final path = <(int, int)>[(startCol, startRow)];
+  final self = <int>{startCol * 1000 + startRow};
+  ArrowDir? lastDir;
+
+  while (path.length < targetLen) {
+    final (curC, curR) = path.last;
+
+    // Candidate directions: shuffle all, then optionally bias towards lastDir.
+    final shuffled = ArrowDir.values.toList()..shuffle(rng);
+    if (lastDir != null && rng.nextDouble() < 0.65) {
+      shuffled.remove(lastDir);
+      shuffled.insert(0, lastDir);
+    }
+
+    bool extended = false;
+    for (final d in shuffled) {
+      final (dx, dy) = d.vector;
+      final nc = curC + dx;
+      final nr = curR + dy;
+      final key = nc * 1000 + nr;
+      if (nc >= 0 &&
+          nc < cols &&
+          nr >= 0 &&
+          nr < rows &&
+          !occupied.contains(key) &&
+          !self.contains(key)) {
+        path.add((nc, nr));
+        self.add(key);
+        lastDir = d;
+        extended = true;
+        break;
+      }
+    }
+    if (!extended) break; // stuck — return what we have
+  }
+  return path;
+}
+
+ArrowDir _stepDir((int, int) from, (int, int) to) {
+  final dx = to.$1 - from.$1;
+  final dy = to.$2 - from.$2;
+  if (dx == 1) return ArrowDir.right;
+  if (dx == -1) return ArrowDir.left;
+  if (dy == 1) return ArrowDir.down;
+  return ArrowDir.up;
+}
+
+PuzzleModel _trivialFallback(_Tier tier) {
   final cols = tier.gridSize;
   final rows = tier.gridSize;
-  // A small chain: arrows pointing right across the middle rows
   final arrows = <ArrowModel>[];
   int id = 0;
   for (int r = 0; r < rows && arrows.length < tier.minArrows; r++) {
     for (int c = 0; c + 1 < cols && arrows.length < tier.minArrows; c += 2) {
       arrows.add(
-        ArrowModel(id: id++, col: c, row: r, dir: ArrowDir.right, len: 1),
+        ArrowModel(
+          id: id++,
+          path: [(c, r), (c + 1, r)],
+          headDir: ArrowDir.right,
+        ),
       );
     }
   }

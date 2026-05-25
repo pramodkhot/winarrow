@@ -1,11 +1,7 @@
 import '../models/arrow_model.dart';
 
-/// Returns true if [arrow] can escape off the board edge without being
-/// blocked by any non-freed arrow in [allArrows].
-///
-/// Pass [freedMask] as a bitmask of already-freed arrow ids (by list index)
-/// to use during solvability simulation. Pass null for live gameplay (rely
-/// on arrow.status instead).
+/// Returns true if [arrow] can escape off the board edge in its head direction
+/// without being blocked by any non-freed arrow in [allArrows].
 bool canFree(
   ArrowModel arrow,
   List<ArrowModel> allArrows,
@@ -13,8 +9,7 @@ bool canFree(
   int rows, {
   int? freedMask,
 }) {
-  // Build occupied-cells set excluding the tested arrow and freed arrows.
-  final occupied = <int>{}; // encoded as col * 100 + row
+  final occupied = <int>{};
 
   for (int i = 0; i < allArrows.length; i++) {
     final a = allArrows[i];
@@ -30,15 +25,14 @@ bool canFree(
     }
   }
 
-  // Walk from just ahead of the head toward the board edge.
-  final (dx, dy) = arrow.dir.vector;
+  final (dx, dy) = arrow.headDir.vector;
   int c = arrow.headCol + dx;
   int r = arrow.headRow + dy;
 
   while (c >= 0 && c < cols && r >= 0 && r < rows) {
-    if (occupied.contains(c * 1000 + r)) return false; // blocked
+    if (occupied.contains(c * 1000 + r)) return false;
     c += dx;
     r += dy;
   }
-  return true; // free to escape
+  return true;
 }

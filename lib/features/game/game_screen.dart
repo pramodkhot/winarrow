@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../app/colors.dart';
@@ -120,18 +121,20 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       arrow.status = ArrowStatus.animating;
     });
 
-    // Compute how far the arrow needs to travel to go fully off-screen
+    // Slide the entire snake body until its LAST cell exits the board edge.
     final metrics = _metrics;
     final cellSize = metrics?.cellSize ?? 40.0;
-    final distanceCells = switch (arrow.dir) {
-      ArrowDir.right => _puzzle.cols - arrow.headCol,
-      ArrowDir.left => arrow.headCol + arrow.len,
-      ArrowDir.up => arrow.headRow + arrow.len,
-      ArrowDir.down => _puzzle.rows - arrow.headRow,
+    final cs = arrow.cells;
+    final totalPx = switch (arrow.headDir) {
+      ArrowDir.right =>
+        (_puzzle.cols - cs.map((c) => c.$1).reduce(min) + 1) * cellSize,
+      ArrowDir.left => (cs.map((c) => c.$1).reduce(max) + 2) * cellSize,
+      ArrowDir.up => (cs.map((c) => c.$2).reduce(max) + 2) * cellSize,
+      ArrowDir.down =>
+        (_puzzle.rows - cs.map((c) => c.$2).reduce(min) + 1) * cellSize,
     };
-    final totalPx = distanceCells * cellSize + cellSize;
     final duration = Duration(
-      milliseconds: (totalPx / _kEscapeSpeed * 1000).round().clamp(200, 800),
+      milliseconds: (totalPx / _kEscapeSpeed * 1000).round().clamp(250, 1000),
     );
 
     final ctrl = AnimationController(vsync: this, duration: duration);

@@ -5,7 +5,8 @@ import 'freedom_checker.dart';
 
 /// Checks solvability.
 /// For ≤30 arrows: full BFS over bitmask state space (exact).
-/// For >30 arrows: repeated greedy simulation (heuristic — fast, not exhaustive).
+/// For >30 arrows: greedy fixed-point simulation (complete for this puzzle type
+/// because freeing an arrow never blocks a previously-freeable arrow).
 bool isSolvable(PuzzleModel puzzle) {
   final n = puzzle.arrows.length;
   if (n == 0) return true;
@@ -42,19 +43,18 @@ bool _bfsSolvable(PuzzleModel puzzle) {
   return false;
 }
 
-/// Greedy simulation: repeatedly free any currently-freeable arrow until none
-/// remain or we're stuck. Run multiple passes to account for ordering effects.
+/// Repeatedly free any currently-freeable arrow until nothing moves.
+/// Monotonic: freed arrows only help, never hurt, so this is complete.
 bool _greedySolvable(PuzzleModel puzzle) {
   final freed = List<bool>.filled(puzzle.arrows.length, false);
-  int prevFreedCount = -1;
   int freedCount = 0;
+  int prevCount = -1;
 
-  while (freedCount != prevFreedCount) {
-    prevFreedCount = freedCount;
+  while (freedCount != prevCount) {
+    prevCount = freedCount;
     for (int i = 0; i < puzzle.arrows.length; i++) {
       if (freed[i]) continue;
-      // Build a freedMask from the freed list (only for canFree call)
-      if (_canFreeWithBoolList(
+      if (_canFreeWithBools(
         puzzle.arrows[i],
         puzzle.arrows,
         freed,
@@ -69,26 +69,21 @@ bool _greedySolvable(PuzzleModel puzzle) {
   return freedCount == puzzle.arrows.length;
 }
 
-bool _canFreeWithBoolList(
+bool _canFreeWithBools(
   ArrowModel arrow,
-  List<ArrowModel> allArrows,
+  List<ArrowModel> all,
   List<bool> freed,
   int cols,
   int rows,
 ) {
   final occupied = <int>{};
-  for (int i = 0; i < allArrows.length; i++) {
-    if (freed[i] || allArrows[i].id == arrow.id) continue;
-    final a = allArrows[i];
-    if (a.status == ArrowStatus.freed || a.status == ArrowStatus.animating) {
-      continue;
-    }
-    for (final cell in a.cells) {
-      occupied.add(cell.$1 * 1000 + cell.$2);
+  for (int i = 0; i < all.length; i++) {
+    if (freed[i] || all[i].id == arrow.id) continue;
+    for (final (c, r) in all[i].cells) {
+      occupied.add(c * 1000 + r);
     }
   }
-
-  final (dx, dy) = arrow.dir.vector;
+  final (dx, dy) = arrow.headDir.vector;
   int c = arrow.headCol + dx;
   int r = arrow.headRow + dy;
   while (c >= 0 && c < cols && r >= 0 && r < rows) {
