@@ -126,12 +126,12 @@ class BoardPainter extends CustomPainter {
       headCenter,
       Paint()
         ..color = color
-        ..strokeWidth = m.cellSize * 0.14
+        ..strokeWidth = m.cellSize * 0.045
         ..strokeCap = StrokeCap.round,
     );
 
     // Tail dot
-    canvas.drawCircle(tailCenter, m.cellSize * 0.12, Paint()..color = color);
+    canvas.drawCircle(tailCenter, m.cellSize * 0.055, Paint()..color = color);
 
     // Arrowhead triangle at head
     _drawHead(canvas, headCenter, arrow.dir, m.cellSize, color);
@@ -178,7 +178,7 @@ class BoardPainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
 
-    final hs = cell * 0.22; // half-size of head
+    final hs = cell * 0.11; // half-size of head
     final path = Path()
       ..moveTo(hs * 1.4, 0)
       ..lineTo(-hs * 0.4, -hs)

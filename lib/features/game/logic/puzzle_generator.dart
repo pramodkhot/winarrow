@@ -14,10 +14,10 @@ class _Tier {
 }
 
 const _tiers = [
-  _Tier(4, 3, 5, 2), // tutorial
-  _Tier(6, 5, 10, 3), // easy
-  _Tier(8, 8, 16, 4), // medium
-  _Tier(10, 14, 24, 5), // hard
+  _Tier(6, 10, 15, 2), // tutorial
+  _Tier(8, 18, 26, 3), // easy
+  _Tier(10, 30, 48, 4), // medium
+  _Tier(12, 50, 80, 5), // hard
 ];
 
 _Tier _tierForLevel(int level) {
@@ -34,7 +34,7 @@ PuzzleModel generatePuzzle(int level) {
   final seed = level * 7919 + 31337;
   final rng = Random(seed);
 
-  for (int attempt = 0; attempt < 200; attempt++) {
+  for (int attempt = 0; attempt < 400; attempt++) {
     final puzzle = _tryBuild(tier, rng);
     if (puzzle != null && isSolvable(puzzle)) return puzzle;
   }
@@ -55,7 +55,7 @@ PuzzleModel? _tryBuild(_Tier tier, Random rng) {
 
   for (
     int attempt = 0;
-    attempt < 500 && arrows.length < targetCount;
+    attempt < 2000 && arrows.length < targetCount;
     attempt++
   ) {
     final dir = ArrowDir.values[rng.nextInt(4)];
@@ -99,13 +99,15 @@ PuzzleModel? _tryBuild(_Tier tier, Random rng) {
 PuzzleModel _trivialFallback(_Tier tier, Random rng) {
   final cols = tier.gridSize;
   final rows = tier.gridSize;
-  // Place a single right-pointing arrow in the middle row
-  return PuzzleModel(
-    cols: cols,
-    rows: rows,
-    arrows: [
-      ArrowModel(id: 0, col: 0, row: rows ~/ 2, dir: ArrowDir.right, len: 2),
-      ArrowModel(id: 1, col: 0, row: rows ~/ 2 + 1, dir: ArrowDir.down, len: 2),
-    ],
-  );
+  // A small chain: arrows pointing right across the middle rows
+  final arrows = <ArrowModel>[];
+  int id = 0;
+  for (int r = 0; r < rows && arrows.length < tier.minArrows; r++) {
+    for (int c = 0; c + 1 < cols && arrows.length < tier.minArrows; c += 2) {
+      arrows.add(
+        ArrowModel(id: id++, col: c, row: r, dir: ArrowDir.right, len: 1),
+      );
+    }
+  }
+  return PuzzleModel(cols: cols, rows: rows, arrows: arrows);
 }
