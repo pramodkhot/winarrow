@@ -27,9 +27,11 @@ class _HomeScreenState extends State<HomeScreen> {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const SettingsScreen()),
-      ).then((_) => setState(() {
-            _currentLevel = LocalStorage.currentLevel;
-          }));
+      ).then(
+        (_) => setState(() {
+          _currentLevel = LocalStorage.currentLevel;
+        }),
+      );
       return;
     }
     setState(() => _navIndex = index);

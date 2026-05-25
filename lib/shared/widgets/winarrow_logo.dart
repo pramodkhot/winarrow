@@ -50,15 +50,27 @@ class _LogoPainter extends CustomPainter {
 
     // ── W: Left arrow (↖) ──────────────────────────────────
     canvas.drawLine(const Offset(24, 84), const Offset(9, 43), whiteLine);
-    _head(canvas, [const Offset(6, 40), const Offset(16, 49), const Offset(5, 54)], Colors.white);
+    _head(canvas, [
+      const Offset(6, 40),
+      const Offset(16, 49),
+      const Offset(5, 54),
+    ], Colors.white);
 
     // ── W: Centre arrow (↑) ────────────────────────────────
     canvas.drawLine(const Offset(46, 84), const Offset(46, 37), blueLine);
-    _head(canvas, [const Offset(46, 30), const Offset(40, 42), const Offset(52, 42)], const Color(0xFF93C5FD));
+    _head(canvas, [
+      const Offset(46, 30),
+      const Offset(40, 42),
+      const Offset(52, 42),
+    ], const Color(0xFF93C5FD));
 
     // ── W: Right arrow (↗) ─────────────────────────────────
     canvas.drawLine(const Offset(68, 84), const Offset(83, 43), whiteLine);
-    _head(canvas, [const Offset(86, 40), const Offset(76, 49), const Offset(87, 54)], Colors.white);
+    _head(canvas, [
+      const Offset(86, 40),
+      const Offset(76, 49),
+      const Offset(87, 54),
+    ], Colors.white);
 
     // ── Arrow body (gradient left→right) ───────────────────
     final bodyShader = const LinearGradient(
@@ -66,7 +78,10 @@ class _LogoPainter extends CustomPainter {
     ).createShader(const Rect.fromLTWH(8, 84, 74, 13));
 
     canvas.drawRRect(
-      RRect.fromRectAndRadius(const Rect.fromLTWH(8, 84, 74, 13), const Radius.circular(3)),
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(8, 84, 74, 13),
+        const Radius.circular(3),
+      ),
       Paint()..shader = bodyShader,
     );
 
@@ -78,12 +93,19 @@ class _LogoPainter extends CustomPainter {
     ).createShader(const Rect.fromLTWH(8, 84, 74, 13));
 
     canvas.drawRRect(
-      RRect.fromRectAndRadius(const Rect.fromLTWH(8, 84, 74, 13), const Radius.circular(3)),
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(8, 84, 74, 13),
+        const Radius.circular(3),
+      ),
       Paint()..shader = hlShader,
     );
 
     // ── Arrow head triangle ─────────────────────────────────
-    _head(canvas, [const Offset(112, 90), const Offset(82, 76), const Offset(82, 104)], const Color(0xFF3B82F6));
+    _head(canvas, [
+      const Offset(112, 90),
+      const Offset(82, 76),
+      const Offset(82, 104),
+    ], const Color(0xFF3B82F6));
 
     // ── Inner edge line (body/head separation) ──────────────
     canvas.drawLine(

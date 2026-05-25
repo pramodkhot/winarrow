@@ -20,7 +20,11 @@ class WinArrowBottomNav extends StatelessWidget {
       decoration: const BoxDecoration(
         color: AppColors.navBarBg,
         boxShadow: [
-          BoxShadow(color: Color(0x0F000000), blurRadius: 12, offset: Offset(0, -2)),
+          BoxShadow(
+            color: Color(0x0F000000),
+            blurRadius: 12,
+            offset: Offset(0, -2),
+          ),
         ],
       ),
       child: SafeArea(
@@ -106,8 +110,8 @@ class _NavItem extends StatelessWidget {
     final Color iconColor = isActive
         ? Colors.white
         : isLocked
-            ? AppColors.textGrey.withValues(alpha: 0.4)
-            : AppColors.textGrey;
+        ? AppColors.textGrey.withValues(alpha: 0.4)
+        : AppColors.textGrey;
 
     return GestureDetector(
       onTap: onTap,
