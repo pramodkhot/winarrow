@@ -82,7 +82,7 @@ class BoardPainter extends CustomPainter {
     final dotPaint = Paint()..color = kColorDotTrack;
     for (int c = 0; c < cols; c++) {
       for (int r = 0; r < rows; r++) {
-        canvas.drawCircle(m.center(c, r), m.cellSize * 0.06, dotPaint);
+        canvas.drawCircle(m.center(c, r), m.cellSize * 0.028, dotPaint);
       }
     }
 
@@ -131,7 +131,7 @@ class BoardPainter extends CustomPainter {
       bodyPath,
       Paint()
         ..color = color
-        ..strokeWidth = m.cellSize * 0.045
+        ..strokeWidth = m.cellSize * 0.020
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..style = PaintingStyle.stroke,
@@ -141,7 +141,7 @@ class BoardPainter extends CustomPainter {
     final tailPt = m
         .center(arrow.tail.$1, arrow.tail.$2)
         .translate(slideX, slideY);
-    canvas.drawCircle(tailPt, m.cellSize * 0.055, Paint()..color = color);
+    canvas.drawCircle(tailPt, m.cellSize * 0.022, Paint()..color = color);
 
     // Arrowhead at head cell, pointing in headDir
     final headPt = m
@@ -164,7 +164,7 @@ class BoardPainter extends CustomPainter {
     while (c >= 0 && c < cols && r >= 0 && r < rows) {
       canvas.drawCircle(
         m.center(c, r).translate(slideX, slideY),
-        m.cellSize * 0.08,
+        m.cellSize * 0.035,
         railPaint,
       );
       c += dx;
@@ -190,11 +190,11 @@ class BoardPainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
 
-    final hs = cell * 0.13;
+    final hs = cell * 0.075;
     final arrowPath = Path()
-      ..moveTo(hs * 1.5, 0)
-      ..lineTo(-hs * 0.5, -hs)
-      ..lineTo(-hs * 0.5, hs)
+      ..moveTo(hs * 1.4, 0)
+      ..lineTo(-hs * 0.4, -hs)
+      ..lineTo(-hs * 0.4, hs)
       ..close();
 
     canvas.drawPath(arrowPath, Paint()..color = color);
