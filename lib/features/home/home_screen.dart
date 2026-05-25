@@ -3,6 +3,7 @@ import '../../app/colors.dart';
 import '../../shared/storage/local_storage.dart';
 import '../../shared/widgets/bottom_nav_bar.dart';
 import '../../shared/widgets/winarrow_logo.dart';
+import '../game/game_screen.dart';
 import '../settings/settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -105,7 +106,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 height: 58,
                 child: ElevatedButton(
                   onPressed: () {
-                    // TODO: Navigate to gameplay screen
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) =>
+                            GameScreen(level: LocalStorage.currentLevel),
+                      ),
+                    ).then(
+                      (_) => setState(() {
+                        _currentLevel = LocalStorage.currentLevel;
+                      }),
+                    );
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
