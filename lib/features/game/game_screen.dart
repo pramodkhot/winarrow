@@ -1,13 +1,15 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../app/colors.dart';
 import '../../shared/storage/local_storage.dart';
-import 'logic/path_tracer.dart';
-import 'models/arrow_direction.dart';
-import 'models/cell.dart';
-import 'models/level_data.dart';
-import 'widgets/arrow_cell_widget.dart';
+import 'logic/path_generator.dart';
+import 'models/difficulty.dart';
+import 'models/puzzle.dart';
+import 'widgets/brilliant_overlay.dart';
+import 'widgets/dot_grid_painter.dart';
+import 'widgets/hearts_widget.dart';
 
 class GameScreen extends StatefulWidget {
   final int level;
@@ -18,11 +20,33 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  late LevelData _levelData;
-  late List<List<Cell>> _grid;
+  static const int _maxHearts = 3;
+
+  late Puzzle _puzzle;
+  late Difficulty _difficulty;
+  int _progress = 0; // correctly traced segments
+  int _hearts = _maxHearts;
   bool _solved = false;
+  bool _gameOver = false;
+
+  // Wrong-move flash
+  (int, int)? _wrongFrom;
+  (int, int)? _wrongTo;
+  Timer? _flashTimer;
+
+  // Drag state
+  bool _isTracing = false;
+  (int, int)? _lastDot;
+  bool _wrongCooldown = false; // prevents rapid repeated deductions
+
+  // Timer
   int _seconds = 0;
-  Timer? _timer;
+  Timer? _ticker;
+
+  // Grid metrics (computed in build)
+  double _gridSize = 0;
+  double _cellW = 0;
+  double _cellH = 0;
 
   @override
   void initState() {
@@ -32,101 +56,148 @@ class _GameScreenState extends State<GameScreen> {
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _flashTimer?.cancel();
+    _ticker?.cancel();
     super.dispose();
   }
 
+  // ── Level management ───────────────────────────────────────────────────────
+
   void _loadLevel(int level) {
-    final idx = (level - 1).clamp(0, kLevels.length - 1);
-    _levelData = kLevels[idx];
-    _buildGrid();
-    _seconds = 0;
+    _difficulty = Difficulty.forLevel(level);
+    _puzzle = PathGenerator.generate(_difficulty, seed: level * 7919);
+    _progress = 0;
+    _hearts = _maxHearts;
     _solved = false;
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!_solved) setState(() => _seconds++);
+    _gameOver = false;
+    _isTracing = false;
+    _lastDot = null;
+    _wrongFrom = null;
+    _wrongTo = null;
+    _seconds = 0;
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!_solved && !_gameOver) setState(() => _seconds++);
     });
-    _runTrace();
   }
 
-  void _buildGrid() {
-    _grid = List.generate(
-      _levelData.rows,
-      (r) => List.generate(
-        _levelData.cols,
-        (c) => Cell(
-          row: r,
-          col: c,
-          direction: _levelData.grid[r * _levelData.cols + c],
-          isStart: r == _levelData.startRow && c == _levelData.startCol,
-          isExit: r == _levelData.exitRow && c == _levelData.exitCol,
-        ),
-      ),
-    );
+  // ── Drag / snap logic ──────────────────────────────────────────────────────
+
+  (int, int) _snapToDot(Offset local) {
+    final c = (local.dx / _cellW - 0.5).round().clamp(0, _puzzle.cols - 1);
+    final r = (local.dy / _cellH - 0.5).round().clamp(0, _puzzle.rows - 1);
+    return (r, c);
   }
 
-  void _runTrace() {
-    final result = tracePath(
-      grid: _grid,
-      startRow: _levelData.startRow,
-      startCol: _levelData.startCol,
-      exitRow: _levelData.exitRow,
-      exitCol: _levelData.exitCol,
-    );
+  void _onPanStart(DragStartDetails d) {
+    if (_solved || _gameOver) return;
+    final dot = _snapToDot(d.localPosition);
+    final startDot = _puzzle.startDot;
+    final leadDot = _puzzle.path[_progress];
 
-    for (int r = 0; r < _levelData.rows; r++) {
-      for (int c = 0; c < _levelData.cols; c++) {
-        _grid[r][c] = _grid[r][c].copyWith(state: result.states[r][c]);
+    if (dot == startDot) {
+      setState(() => _progress = 0);
+      _lastDot = dot;
+      _isTracing = true;
+    } else if (dot == leadDot) {
+      _lastDot = dot;
+      _isTracing = true;
+    } else {
+      _isTracing = false;
+    }
+  }
+
+  void _onPanUpdate(DragUpdateDetails d) {
+    if (!_isTracing || _solved || _gameOver) return;
+    final dot = _snapToDot(d.localPosition);
+    if (dot == _lastDot) return; // still on same dot
+
+    final prevDot = _lastDot;
+    _lastDot = dot;
+
+    final leadDot = _puzzle.path[_progress];
+
+    if (dot == leadDot) return; // moved back to current lead (no-op)
+
+    final hasNext = _progress < _puzzle.segmentCount;
+    final nextDot = hasNext ? _puzzle.path[_progress + 1] : null;
+    final hasPrev = _progress > 0;
+    final prevCorrect = hasPrev ? _puzzle.path[_progress - 1] : null;
+
+    if (dot == nextDot) {
+      // Correct segment traced
+      HapticFeedback.selectionClick();
+      setState(() {
+        _progress++;
+        _wrongFrom = null;
+        _wrongTo = null;
+      });
+      if (_progress == _puzzle.segmentCount) _onSolved();
+    } else if (dot == prevCorrect) {
+      // Undo last correct step
+      setState(() => _progress--);
+    } else {
+      // Wrong move
+      if (!_wrongCooldown) {
+        _wrongCooldown = true;
+        HapticFeedback.mediumImpact();
+        final from = prevDot ?? leadDot;
+        setState(() {
+          _wrongFrom = from;
+          _wrongTo = dot;
+          _hearts--;
+        });
+        _flashTimer?.cancel();
+        _flashTimer = Timer(const Duration(milliseconds: 350), () {
+          if (mounted) {
+            setState(() {
+              _wrongFrom = null;
+              _wrongTo = null;
+            });
+          }
+          _wrongCooldown = false;
+        });
+
+        if (_hearts <= 0) {
+          _ticker?.cancel();
+          Future.delayed(const Duration(milliseconds: 400), _showOutOfLives);
+        }
       }
     }
-
-    if (result.solved && !_solved) {
-      _solved = true;
-      _timer?.cancel();
-      HapticFeedback.mediumImpact();
-      Future.delayed(const Duration(milliseconds: 300), _showWinDialog);
-    }
   }
 
-  void _onCellTap(int row, int col) {
-    if (_solved) return;
-    HapticFeedback.selectionClick();
-    setState(() {
-      _grid[row][col] = _grid[row][col].copyWith(
-        direction: _grid[row][col].direction.rotated(),
-      );
-      _runTrace();
-    });
+  void _onPanEnd(DragEndDetails _) {
+    _isTracing = false;
   }
 
-  Future<void> _showWinDialog() async {
-    final isNewLevel = widget.level >= LocalStorage.currentLevel;
-    if (isNewLevel) await LocalStorage.advanceLevel();
+  // ── Solve / game over ──────────────────────────────────────────────────────
 
+  void _onSolved() async {
+    _ticker?.cancel();
+    HapticFeedback.heavyImpact();
+    final isNew = widget.level >= LocalStorage.currentLevel;
+    if (isNew) await LocalStorage.advanceLevel();
+    if (mounted) setState(() => _solved = true);
+  }
+
+  void _showOutOfLives() {
     if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _WinDialog(
-        level: widget.level,
-        seconds: _seconds,
-        onNext: () {
-          Navigator.pop(context); // close dialog
-          final nextLevel = widget.level + 1;
-          if (nextLevel <= kLevels.length) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => GameScreen(level: nextLevel)),
-            );
-          } else {
-            Navigator.pop(context); // back to home if no more levels
-          }
-        },
-        onHome: () {
+      builder: (_) => _OutOfLivesDialog(
+        onAddLives: () {
           Navigator.pop(context);
-          Navigator.pop(context);
+          setState(() {
+            _hearts = _maxHearts;
+            _gameOver = false;
+            _wrongCooldown = false;
+            _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+              if (!_solved) setState(() => _seconds++);
+            });
+          });
         },
-        onReplay: () {
+        onRestart: () {
           Navigator.pop(context);
           setState(() => _loadLevel(widget.level));
         },
@@ -134,37 +205,94 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
+  // ── Timer label ────────────────────────────────────────────────────────────
+
   String get _timeLabel {
     final m = _seconds ~/ 60;
     final s = _seconds % 60;
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
+  // ── Build ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
+    final screenW = MediaQuery.of(context).size.width;
+    final screenH = MediaQuery.of(context).size.height;
+    _gridSize = min(screenW - 32, screenH * 0.58).clamp(200.0, 440.0);
+    _cellW = _gridSize / _puzzle.cols;
+    _cellH = _gridSize / _puzzle.rows;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            _Header(
-              level: widget.level,
-              timeLabel: _timeLabel,
-              onBack: () => Navigator.pop(context),
-              onRestart: () => setState(() => _loadLevel(widget.level)),
+            Column(
+              children: [
+                _Header(
+                  level: widget.level,
+                  difficulty: _difficulty.label,
+                  timeLabel: _timeLabel,
+                  onBack: () => Navigator.pop(context),
+                  onRestart: () => setState(() => _loadLevel(widget.level)),
+                ),
+                const SizedBox(height: 12),
+                HeartsWidget(hearts: _hearts),
+                const SizedBox(height: 16),
+                // Dot grid
+                Center(
+                  child: Container(
+                    width: _gridSize,
+                    height: _gridSize,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x12000000),
+                          blurRadius: 20,
+                          offset: Offset(0, 6),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: GestureDetector(
+                        onPanStart: _onPanStart,
+                        onPanUpdate: _onPanUpdate,
+                        onPanEnd: _onPanEnd,
+                        child: CustomPaint(
+                          size: Size(_gridSize, _gridSize),
+                          painter: DotGridPainter(
+                            rows: _puzzle.rows,
+                            cols: _puzzle.cols,
+                            path: _puzzle.path,
+                            playerProgress: _progress,
+                            wrongFrom: _wrongFrom,
+                            wrongTo: _wrongTo,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                _Legend(),
+              ],
             ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _GridView(grid: _grid, onTap: _onCellTap),
-            ),
-            const SizedBox(height: 16),
-            _Legend(
-              startRow: _levelData.startRow,
-              startCol: _levelData.startCol,
-              exitRow: _levelData.exitRow,
-              exitCol: _levelData.exitCol,
-            ),
-            const SizedBox(height: 20),
+            // Brilliant overlay
+            if (_solved)
+              BrilliantOverlay(
+                level: widget.level,
+                onContinue: () {
+                  final next = widget.level + 1;
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => GameScreen(level: next)),
+                  );
+                },
+              ),
           ],
         ),
       ),
@@ -172,16 +300,18 @@ class _GameScreenState extends State<GameScreen> {
   }
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
+// ── Header ─────────────────────────────────────────────────────────────────
 
 class _Header extends StatelessWidget {
   final int level;
+  final String difficulty;
   final String timeLabel;
   final VoidCallback onBack;
   final VoidCallback onRestart;
 
   const _Header({
     required this.level,
+    required this.difficulty,
     required this.timeLabel,
     required this.onBack,
     required this.onRestart,
@@ -190,32 +320,45 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 12, 8, 0),
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 0),
       child: Row(
         children: [
           IconButton(
             onPressed: onBack,
-            icon: const Icon(Icons.arrow_back_ios_new_rounded),
+            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+            color: AppColors.textPrimary,
+          ),
+          IconButton(
+            onPressed: onRestart,
+            icon: const Icon(Icons.refresh_rounded, size: 22),
             color: AppColors.textPrimary,
           ),
           Expanded(
-            child: Center(
-              child: Text(
-                'Level $level',
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.textPrimary,
-                  letterSpacing: 0.5,
+            child: Column(
+              children: [
+                Text(
+                  'Level $level',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.textPrimary,
+                  ),
                 ),
-              ),
+                Text(
+                  difficulty,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textGrey,
+                  ),
+                ),
+              ],
             ),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
             decoration: BoxDecoration(
               color: AppColors.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
               timeLabel,
@@ -227,101 +370,29 @@ class _Header extends StatelessWidget {
               ),
             ),
           ),
-          IconButton(
-            onPressed: onRestart,
-            icon: const Icon(Icons.refresh_rounded),
-            color: AppColors.textPrimary,
-          ),
+          const SizedBox(width: 12),
         ],
       ),
     );
   }
 }
 
-// ── Grid ──────────────────────────────────────────────────────────────────────
-
-class _GridView extends StatelessWidget {
-  final List<List<Cell>> grid;
-  final void Function(int row, int col) onTap;
-
-  const _GridView({required this.grid, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final rows = grid.length;
-    final cols = grid[0].length;
-    final screenW = MediaQuery.of(context).size.width;
-    final cellSize = ((screenW - 48) / cols).clamp(44.0, 76.0);
-
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x10000000),
-              blurRadius: 16,
-              offset: Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: List.generate(rows, (r) {
-            return Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(cols, (c) {
-                return Padding(
-                  padding: const EdgeInsets.all(3),
-                  child: SizedBox(
-                    width: cellSize,
-                    height: cellSize,
-                    child: ArrowCellWidget(
-                      cell: grid[r][c],
-                      onTap: () => onTap(r, c),
-                    ),
-                  ),
-                );
-              }),
-            );
-          }),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Legend ────────────────────────────────────────────────────────────────────
+// ── Legend ─────────────────────────────────────────────────────────────────
 
 class _Legend extends StatelessWidget {
-  final int startRow, startCol, exitRow, exitCol;
-
-  const _Legend({
-    required this.startRow,
-    required this.startCol,
-    required this.exitRow,
-    required this.exitCol,
-  });
+  const _Legend();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          _Dot(color: AppColors.primary, label: 'Start ($startRow,$startCol)'),
-          const SizedBox(width: 24),
-          _Dot(
-            color: const Color(0xFF16A34A),
-            label: 'Exit ($exitRow,$exitCol)',
-          ),
-          const SizedBox(width: 24),
-          _Dot(color: const Color(0xFFF59E0B), label: 'Dead end'),
-        ],
-      ),
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        _Dot(color: AppColors.primary, label: 'Start'),
+        const SizedBox(width: 20),
+        _Dot(color: const Color(0xFF16A34A), label: 'End'),
+        const SizedBox(width: 20),
+        _Dot(color: const Color(0xFFEF4444), label: 'Wrong'),
+      ],
     );
   }
 }
@@ -329,7 +400,6 @@ class _Legend extends StatelessWidget {
 class _Dot extends StatelessWidget {
   final Color color;
   final String label;
-
   const _Dot({required this.color, required this.label});
 
   @override
@@ -352,28 +422,13 @@ class _Dot extends StatelessWidget {
   }
 }
 
-// ── Win dialog ────────────────────────────────────────────────────────────────
+// ── Out of lives dialog ─────────────────────────────────────────────────────
 
-class _WinDialog extends StatelessWidget {
-  final int level;
-  final int seconds;
-  final VoidCallback onNext;
-  final VoidCallback onHome;
-  final VoidCallback onReplay;
+class _OutOfLivesDialog extends StatelessWidget {
+  final VoidCallback onAddLives;
+  final VoidCallback onRestart;
 
-  const _WinDialog({
-    required this.level,
-    required this.seconds,
-    required this.onNext,
-    required this.onHome,
-    required this.onReplay,
-  });
-
-  String get _time {
-    final m = seconds ~/ 60;
-    final s = seconds % 60;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
-  }
+  const _OutOfLivesDialog({required this.onAddLives, required this.onRestart});
 
   @override
   Widget build(BuildContext context) {
@@ -384,25 +439,37 @@ class _WinDialog extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            const Icon(
+              Icons.favorite_border_rounded,
+              size: 48,
+              color: Color(0xFFEF4444),
+            ),
+            const SizedBox(height: 12),
             const Text(
-              'Level Complete!',
+              'Out of Lives',
               style: TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w900,
                 color: AppColors.textPrimary,
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Level $level  •  $_time',
-              style: const TextStyle(fontSize: 15, color: AppColors.textGrey),
+            const SizedBox(height: 6),
+            const Text(
+              'Watch an ad to get more lives\nor restart for free.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, color: AppColors.textGrey),
             ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
               height: 50,
-              child: ElevatedButton(
-                onPressed: onNext,
+              child: ElevatedButton.icon(
+                onPressed: onAddLives,
+                icon: const Icon(Icons.play_circle_outline_rounded),
+                label: const Text(
+                  'Add More Lives',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
@@ -410,45 +477,24 @@ class _WinDialog extends StatelessWidget {
                     borderRadius: BorderRadius.circular(14),
                   ),
                 ),
-                child: const Text(
-                  'Next Level',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-                ),
               ),
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: onReplay,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.textPrimary,
-                      side: const BorderSide(color: Color(0xFFE5E7EB)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                    ),
-                    child: const Text('Replay'),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: OutlinedButton.icon(
+                onPressed: onRestart,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Restart'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.textPrimary,
+                  side: const BorderSide(color: Color(0xFFE5E7EB)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: onHome,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.textPrimary,
-                      side: const BorderSide(color: Color(0xFFE5E7EB)),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                    ),
-                    child: const Text('Home'),
-                  ),
-                ),
-              ],
+              ),
             ),
           ],
         ),
