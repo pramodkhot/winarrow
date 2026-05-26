@@ -9,7 +9,9 @@ import 'logic/puzzle_generator.dart';
 import 'models/arrow_model.dart';
 import 'models/puzzle_model.dart';
 import 'widgets/arrow_painter.dart';
+import 'models/cat_model.dart';
 import 'widgets/brilliant_overlay.dart';
+import 'widgets/cat_rescued_overlay.dart';
 import 'widgets/hearts_widget.dart';
 
 // Escape animation speed (pixels per second)
@@ -43,6 +45,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   int _seconds = 0;
   Timer? _ticker;
 
+  // Cat rescue state
+  int _catSecondsLeft = 45;
+  Timer? _catTimer;
+  double _catEscapeOffset = 0;
+  AnimationController? _catEscapeCtrl;
+
   // Grid metrics (computed in build)
   GridMetrics? _metrics;
   double _boardSize = 0;
@@ -57,6 +65,8 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   void dispose() {
     _flashTimer?.cancel();
     _ticker?.cancel();
+    _catTimer?.cancel();
+    _catEscapeCtrl?.dispose();
     for (final c in _escapeCtrl.values) {
       c.dispose();
     }
@@ -82,6 +92,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!_solved) setState(() => _seconds++);
     });
+    // Cat state
+    _catTimer?.cancel();
+    _catEscapeCtrl?.dispose();
+    _catEscapeCtrl = null;
+    _catEscapeOffset = 0;
+    _catSecondsLeft = 45;
+    if (_puzzle.isCatLevel) _startCatTimer();
   }
 
   // ── Tap handler ──────────────────────────────────────────────────────────────
@@ -155,6 +172,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         ctrl.dispose();
         _escapeCtrl.remove(arrow.id);
         _checkSolved();
+        _checkCatFree();
       }
     });
 
@@ -162,6 +180,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _checkSolved() async {
+    // Cat levels complete via _checkCatFree, not arrow count.
+    if (_puzzle.isCatLevel) return;
+
     final allFreed = _puzzle.arrows.every((a) => a.status == ArrowStatus.freed);
     if (!allFreed) return;
 
@@ -170,6 +191,90 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     final isNew = widget.level >= LocalStorage.currentLevel;
     if (isNew) await LocalStorage.advanceLevel();
     if (mounted) setState(() => _solved = true);
+  }
+
+  // ── Cat rescue ───────────────────────────────────────────────────────────────
+
+  void _startCatTimer() {
+    _catTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _solved) return;
+      setState(() {
+        _catSecondsLeft--;
+        if (_catSecondsLeft <= 0) _onCatTimerExpired();
+      });
+    });
+  }
+
+  void _onCatTimerExpired() {
+    _catTimer?.cancel();
+    HapticFeedback.mediumImpact();
+    _hearts--;
+    _catSecondsLeft = 45;
+    if (_hearts <= 0) {
+      _ticker?.cancel();
+      _showOutOfLives();
+    } else {
+      _startCatTimer();
+    }
+  }
+
+  void _checkCatFree() {
+    final cat = _puzzle.cat;
+    if (cat == null || cat.status != CatStatus.waiting) return;
+
+    final occupied = {
+      for (final a in _puzzle.arrows)
+        if (a.status != ArrowStatus.freed && a.status != ArrowStatus.animating)
+          for (final cell in a.cells) cell.$1 * 1000 + cell.$2,
+    };
+    final (dx, dy) = cat.exitDir.vector;
+    int c = cat.col + dx;
+    int r = cat.row + dy;
+    while (c >= 0 && c < _puzzle.cols && r >= 0 && r < _puzzle.rows) {
+      if (occupied.contains(c * 1000 + r)) return; // still blocked
+      c += dx;
+      r += dy;
+    }
+    _startCatEscape();
+  }
+
+  void _startCatEscape() async {
+    final cat = _puzzle.cat!;
+    _catTimer?.cancel();
+    HapticFeedback.heavyImpact();
+    setState(() => cat.status = CatStatus.escaping);
+
+    final cellSize = _metrics?.cellSize ?? 40.0;
+    final totalPx = switch (cat.exitDir) {
+      ArrowDir.right => (_puzzle.cols - cat.col + 1) * cellSize,
+      ArrowDir.left => (cat.col + 2) * cellSize,
+      ArrowDir.up => (cat.row + 2) * cellSize,
+      ArrowDir.down => (_puzzle.rows - cat.row + 1) * cellSize,
+    };
+
+    final ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _catEscapeCtrl = ctrl;
+
+    ctrl.addListener(() {
+      setState(() => _catEscapeOffset = ctrl.value * totalPx);
+    });
+
+    ctrl.addStatusListener((status) async {
+      if (status == AnimationStatus.completed) {
+        setState(() => cat.status = CatStatus.freed);
+        ctrl.dispose();
+        _catEscapeCtrl = null;
+        _ticker?.cancel();
+        final isNew = widget.level >= LocalStorage.currentLevel;
+        if (isNew) await LocalStorage.advanceLevel();
+        if (mounted) setState(() => _solved = true);
+      }
+    });
+
+    ctrl.forward();
   }
 
   // ── Blocked tap: flash error ─────────────────────────────────────────────────
@@ -270,7 +375,11 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 12),
                 HeartsWidget(hearts: _hearts),
-                const SizedBox(height: 20),
+                if (_puzzle.isCatLevel) ...[
+                  const SizedBox(height: 8),
+                  _CatTimerBar(secondsLeft: _catSecondsLeft),
+                ],
+                const SizedBox(height: 12),
                 // Board
                 GestureDetector(
                   onTapDown: (d) => _onBoardTap(d.localPosition),
@@ -298,31 +407,50 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                           arrows: _puzzle.arrows,
                           escapeOffsets: _escapeOffsets,
                           flashId: _flashId,
+                          cat: _puzzle.cat,
+                          catEscapeOffset: _catEscapeOffset,
                         ),
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 12),
                 Text(
-                  '${_puzzle.arrows.where((a) => a.status != ArrowStatus.freed).length} arrows remaining',
-                  style: const TextStyle(
+                  _puzzle.isCatLevel
+                      ? 'Clear the path to free the cat!'
+                      : '${_puzzle.arrows.where((a) => a.status != ArrowStatus.freed).length} arrows remaining',
+                  style: TextStyle(
                     fontSize: 13,
-                    color: AppColors.textGrey,
+                    color: _puzzle.isCatLevel
+                        ? const Color(0xFFF59E0B)
+                        : AppColors.textGrey,
+                    fontWeight: _puzzle.isCatLevel
+                        ? FontWeight.w700
+                        : FontWeight.normal,
                   ),
                 ),
               ],
             ),
             if (_solved)
-              BrilliantOverlay(
-                level: widget.level,
-                onContinue: () => Navigator.pushReplacement(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => GameScreen(level: widget.level + 1),
-                  ),
-                ),
-              ),
+              _puzzle.isCatLevel
+                  ? CatRescuedOverlay(
+                      level: widget.level,
+                      onContinue: () => Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GameScreen(level: widget.level + 1),
+                        ),
+                      ),
+                    )
+                  : BrilliantOverlay(
+                      level: widget.level,
+                      onContinue: () => Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GameScreen(level: widget.level + 1),
+                        ),
+                      ),
+                    ),
           ],
         ),
       ),
@@ -483,6 +611,58 @@ class _OutOfLivesDialog extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ── Cat timer bar ─────────────────────────────────────────────────────────────
+
+class _CatTimerBar extends StatelessWidget {
+  final int secondsLeft;
+  const _CatTimerBar({required this.secondsLeft});
+
+  @override
+  Widget build(BuildContext context) {
+    final urgent = secondsLeft <= 10;
+    final color = urgent ? const Color(0xFFE05252) : const Color(0xFFF59E0B);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(urgent ? '⚠️' : '🐱', style: const TextStyle(fontSize: 16)),
+          const SizedBox(width: 6),
+          Text(
+            'Rescue the cat!',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '${secondsLeft}s',
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

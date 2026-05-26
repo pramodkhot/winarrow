@@ -1,5 +1,6 @@
 import 'dart:math';
 import '../models/arrow_model.dart';
+import '../models/cat_model.dart';
 import '../models/puzzle_model.dart';
 import 'solvability.dart';
 
@@ -42,12 +43,16 @@ PuzzleModel generatePuzzle(int level) {
   final tier = _tierForLevel(level);
   final seed = level * 7919 + 31337;
   final rng = Random(seed);
+  final withCat = level % 10 == 0 && level > 0;
 
   for (int attempt = 0; attempt < 400; attempt++) {
     final puzzle = _tryBuild(tier, rng);
-    if (puzzle != null && isSolvable(puzzle)) return puzzle;
+    if (puzzle != null && isSolvable(puzzle)) {
+      return withCat ? _addCat(puzzle, rng) : puzzle;
+    }
   }
-  return _trivialFallback(tier);
+  final fallback = _trivialFallback(tier);
+  return withCat ? _addCat(fallback, rng) : fallback;
 }
 
 // ── Generator internals ───────────────────────────────────────────────────────
@@ -168,4 +173,77 @@ PuzzleModel _trivialFallback(_Tier tier) {
     }
   }
   return PuzzleModel(cols: cols, rows: rows, arrows: arrows);
+}
+
+// ── Cat rescue placement ──────────────────────────────────────────────────────
+
+/// Places a cat at the board center and ensures its exit path is initially blocked.
+PuzzleModel _addCat(PuzzleModel puzzle, Random rng) {
+  final cc = puzzle.cols ~/ 2;
+  final cr = puzzle.rows ~/ 2;
+  final exitDir = ArrowDir.values[rng.nextInt(4)];
+
+  // Remove arrow cells overlapping the cat's cell, re-index IDs.
+  final filtered = puzzle.arrows
+      .where((a) => !a.cells.any((c) => c.$1 == cc && c.$2 == cr))
+      .toList();
+  final arrows = [
+    for (int i = 0; i < filtered.length; i++)
+      ArrowModel(id: i, path: filtered[i].path, headDir: filtered[i].headDir),
+  ];
+
+  // Check whether the cat's exit path is already blocked.
+  final occupied = {
+    for (final a in arrows)
+      for (final cell in a.cells) cell.$1 * 1000 + cell.$2,
+  };
+  final (dx, dy) = exitDir.vector;
+  bool blocked = false;
+  {
+    int c = cc + dx;
+    int r = cr + dy;
+    while (c >= 0 && c < puzzle.cols && r >= 0 && r < puzzle.rows) {
+      if (occupied.contains(c * 1000 + r)) {
+        blocked = true;
+        break;
+      }
+      c += dx;
+      r += dy;
+    }
+  }
+
+  // If exit path is clear, insert a 2-cell blocking arrow.
+  if (!blocked) {
+    final bc = cc + dx;
+    final br = cr + dy;
+    final perpDir = dx != 0 ? ArrowDir.down : ArrowDir.right;
+    final (px, py) = perpDir.vector;
+    final bc2 = bc + px;
+    final br2 = br + py;
+    if (bc >= 0 &&
+        bc < puzzle.cols &&
+        br >= 0 &&
+        br < puzzle.rows &&
+        bc2 >= 0 &&
+        bc2 < puzzle.cols &&
+        br2 >= 0 &&
+        br2 < puzzle.rows &&
+        !occupied.contains(bc * 1000 + br) &&
+        !occupied.contains(bc2 * 1000 + br2)) {
+      arrows.add(
+        ArrowModel(
+          id: arrows.length,
+          path: [(bc, br), (bc2, br2)],
+          headDir: perpDir,
+        ),
+      );
+    }
+  }
+
+  return PuzzleModel(
+    cols: puzzle.cols,
+    rows: puzzle.rows,
+    arrows: arrows,
+    cat: CatModel(col: cc, row: cr, exitDir: exitDir),
+  );
 }

@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models/arrow_model.dart';
+import '../models/cat_model.dart';
 
 // ── Spec color tokens ─────────────────────────────────────────────────────────
 
@@ -59,6 +60,8 @@ class BoardPainter extends CustomPainter {
   final List<ArrowModel> arrows;
   final Map<int, double> escapeOffsets;
   final int? flashId;
+  final CatModel? cat;
+  final double catEscapeOffset;
 
   const BoardPainter({
     required this.cols,
@@ -66,6 +69,8 @@ class BoardPainter extends CustomPainter {
     required this.arrows,
     required this.escapeOffsets,
     this.flashId,
+    this.cat,
+    this.catEscapeOffset = 0,
   });
 
   @override
@@ -90,6 +95,11 @@ class BoardPainter extends CustomPainter {
     for (final arrow in arrows) {
       if (arrow.status == ArrowStatus.freed) continue;
       _drawArrow(canvas, arrow, m);
+    }
+
+    // 4. Cat (drawn on top of arrows)
+    if (cat != null && cat!.status != CatStatus.freed) {
+      _drawCat(canvas, cat!, m);
     }
   }
 
@@ -201,9 +211,118 @@ class BoardPainter extends CustomPainter {
     canvas.restore();
   }
 
+  void _drawCat(Canvas canvas, CatModel catM, GridMetrics m) {
+    final (dx, dy) = catM.exitDir.vector;
+    final slideX = catM.status == CatStatus.escaping
+        ? dx * catEscapeOffset
+        : 0.0;
+    final slideY = catM.status == CatStatus.escaping
+        ? dy * catEscapeOffset
+        : 0.0;
+
+    final center = m.center(catM.col, catM.row).translate(slideX, slideY);
+    final r = (m.cellSize * 0.44).clamp(10.0, 28.0);
+
+    // Exit-path rail (amber tinted)
+    {
+      int c = catM.col + dx;
+      int row = catM.row + dy;
+      final railPaint = Paint()
+        ..color = const Color(0xFFF59E0B).withValues(alpha: 0.45);
+      while (c >= 0 && c < cols && row >= 0 && row < rows) {
+        canvas.drawCircle(
+          m.center(c, row).translate(slideX, slideY),
+          m.cellSize * 0.07,
+          railPaint,
+        );
+        c += dx;
+        row += dy;
+      }
+    }
+
+    // Head (cream fill + amber border)
+    canvas.drawCircle(center, r, Paint()..color = const Color(0xFFFEF3C7));
+    canvas.drawCircle(
+      center,
+      r,
+      Paint()
+        ..color = const Color(0xFFF59E0B)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = r * 0.13,
+    );
+
+    // Ears
+    for (final side in [-1.0, 1.0]) {
+      final earTip = center.translate(side * r * 0.48, -r * 0.88);
+      final earL = center.translate(side * r * 0.78, -r * 0.42);
+      final earR = center.translate(side * r * 0.18, -r * 0.55);
+      final earPath = Path()
+        ..moveTo(earTip.dx, earTip.dy)
+        ..lineTo(earL.dx, earL.dy)
+        ..lineTo(earR.dx, earR.dy)
+        ..close();
+      canvas.drawPath(earPath, Paint()..color = const Color(0xFFF59E0B));
+    }
+
+    // Eyes
+    for (final side in [-1.0, 1.0]) {
+      canvas.drawCircle(
+        center.translate(side * r * 0.3, -r * 0.1),
+        r * 0.12,
+        Paint()..color = const Color(0xFF1A1A3E),
+      );
+    }
+
+    // Nose
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: center.translate(0, r * 0.18),
+        width: r * 0.22,
+        height: r * 0.15,
+      ),
+      Paint()..color = const Color(0xFFEC4899),
+    );
+
+    // Whiskers (2 per side)
+    final wPaint = Paint()
+      ..color = const Color(0xFF1A1A3E)
+      ..strokeWidth = r * 0.045;
+    for (final side in [-1.0, 1.0]) {
+      canvas.drawLine(
+        center.translate(side * r * 0.48, r * 0.14),
+        center.translate(side * r * 0.1, r * 0.2),
+        wPaint,
+      );
+      canvas.drawLine(
+        center.translate(side * r * 0.48, r * 0.28),
+        center.translate(side * r * 0.1, r * 0.27),
+        wPaint,
+      );
+    }
+
+    // "FREE ME!" label below cat (only while waiting)
+    if (catM.status == CatStatus.waiting) {
+      final fontSize = (r * 0.38).clamp(6.0, 12.0);
+      final tp = TextPainter(
+        text: TextSpan(
+          text: 'FREE ME!',
+          style: TextStyle(
+            color: const Color(0xFFF59E0B),
+            fontSize: fontSize,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      tp.paint(canvas, center.translate(-tp.width / 2, r + r * 0.18));
+    }
+  }
+
   @override
   bool shouldRepaint(BoardPainter old) =>
       old.arrows != arrows ||
       old.escapeOffsets != escapeOffsets ||
-      old.flashId != flashId;
+      old.flashId != flashId ||
+      old.catEscapeOffset != catEscapeOffset ||
+      old.cat?.status != cat?.status;
 }
