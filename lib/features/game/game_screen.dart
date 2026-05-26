@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../app/colors.dart';
+import '../../shared/ads/ad_service.dart';
 import '../../shared/storage/local_storage.dart';
 import 'logic/freedom_checker.dart';
 import 'logic/puzzle_generator.dart';
@@ -313,13 +314,19 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       builder: (_) => _OutOfLivesDialog(
         onAddLives: () {
           Navigator.pop(context);
-          setState(() {
-            _hearts = _maxHearts;
-            _inputFrozen = false;
-            _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-              if (!_solved) setState(() => _seconds++);
-            });
-          });
+          // Show rewarded ad; grant lives on completion (fallback: grant immediately).
+          AdService.instance.showRewarded(
+            onRewarded: () {
+              if (!mounted) return;
+              setState(() {
+                _hearts = _maxHearts;
+                _inputFrozen = false;
+                _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+                  if (!_solved) setState(() => _seconds++);
+                });
+              });
+            },
+          );
         },
         onRestart: () {
           Navigator.pop(context);

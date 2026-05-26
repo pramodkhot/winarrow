@@ -45,8 +45,8 @@ PuzzleModel generatePuzzle(int level) {
   final rng = Random(seed);
   final withCat = level % 10 == 0 && level > 0;
 
-  for (int attempt = 0; attempt < 400; attempt++) {
-    final puzzle = _tryBuild(tier, rng);
+  for (int attempt = 0; attempt < 8; attempt++) {
+    final puzzle = _tryBuild(tier, Random(seed + attempt * 997));
     if (puzzle != null && isSolvable(puzzle)) {
       return withCat ? _addCat(puzzle, rng) : puzzle;
     }
@@ -57,36 +57,51 @@ PuzzleModel generatePuzzle(int level) {
 
 // ── Generator internals ───────────────────────────────────────────────────────
 
+/// Returns the least-used direction, breaking ties randomly.
+ArrowDir _leastUsedDir(Map<ArrowDir, int> counts, Random rng) {
+  final minCount = counts.values.reduce(min);
+  final candidates =
+      ArrowDir.values.where((d) => counts[d] == minCount).toList()
+        ..shuffle(rng);
+  return candidates.first;
+}
+
+/// Scan every cell of the grid exactly once in shuffled order.
+/// For each unoccupied cell, grow a snake preferring the least-used direction.
+/// This guarantees uniform spatial distribution and balanced arrow directions.
 PuzzleModel? _tryBuild(_Tier tier, Random rng) {
   final cols = tier.gridSize;
   final rows = tier.gridSize;
-  final targetCount =
-      tier.minArrows + rng.nextInt(tier.maxArrows - tier.minArrows + 1);
-  final occupied = <int>{}; // cells claimed by placed arrows
+  final occupied = <int>{};
   final arrows = <ArrowModel>[];
+  final dirCount = {for (final d in ArrowDir.values) d: 0};
 
-  for (
-    int attempt = 0;
-    attempt < 4000 && arrows.length < targetCount;
-    attempt++
-  ) {
-    final startCol = rng.nextInt(cols);
-    final startRow = rng.nextInt(rows);
-    if (occupied.contains(startCol * 1000 + startRow)) continue;
+  // Every cell visited exactly once in random order — no clustering possible.
+  final allCells = [
+    for (int r = 0; r < rows; r++)
+      for (int c = 0; c < cols; c++) (c, r),
+  ]..shuffle(rng);
+
+  for (final (sc, sr) in allCells) {
+    if (occupied.contains(sc * 1000 + sr)) continue;
+    if (arrows.length >= tier.maxArrows) break;
 
     final targetLen = tier.minLen + rng.nextInt(tier.maxLen - tier.minLen + 1);
+    final preferredDir = _leastUsedDir(dirCount, rng);
     final path = _buildSnakePath(
-      startCol,
-      startRow,
+      sc,
+      sr,
       rng,
       cols,
       rows,
       targetLen,
       occupied,
+      preferredDir,
     );
     if (path.length < 2) continue;
 
     final headDir = _stepDir(path[path.length - 2], path.last);
+    dirCount[headDir] = dirCount[headDir]! + 1;
     for (final (c, r) in path) {
       occupied.add(c * 1000 + r);
     }
@@ -97,9 +112,9 @@ PuzzleModel? _tryBuild(_Tier tier, Random rng) {
   return PuzzleModel(cols: cols, rows: rows, arrows: arrows);
 }
 
-/// Grow a snake path starting at (startCol, startRow).
-/// Checks [occupied] (other arrows) AND self-cells to avoid overlap.
-/// Prefers continuing in the same direction 65 % of the time for longer runs.
+/// Grow a snake path from (startCol, startRow).
+/// [preferredFirstDir] biases the very first step for direction balance.
+/// Continuation bias is 40% (was 65%) so paths turn more often.
 List<(int, int)> _buildSnakePath(
   int startCol,
   int startRow,
@@ -108,6 +123,7 @@ List<(int, int)> _buildSnakePath(
   int rows,
   int targetLen,
   Set<int> occupied,
+  ArrowDir preferredFirstDir,
 ) {
   final path = <(int, int)>[(startCol, startRow)];
   final self = <int>{startCol * 1000 + startRow};
@@ -116,9 +132,14 @@ List<(int, int)> _buildSnakePath(
   while (path.length < targetLen) {
     final (curC, curR) = path.last;
 
-    // Candidate directions: shuffle all, then optionally bias towards lastDir.
     final shuffled = ArrowDir.values.toList()..shuffle(rng);
-    if (lastDir != null && rng.nextDouble() < 0.65) {
+
+    if (lastDir == null) {
+      // First step: bias toward the preferred direction for direction balance.
+      shuffled.remove(preferredFirstDir);
+      shuffled.insert(0, preferredFirstDir);
+    } else if (rng.nextDouble() < 0.40) {
+      // Subsequent steps: mild continuation bias (40%) → more turns.
       shuffled.remove(lastDir);
       shuffled.insert(0, lastDir);
     }
@@ -142,7 +163,7 @@ List<(int, int)> _buildSnakePath(
         break;
       }
     }
-    if (!extended) break; // stuck — return what we have
+    if (!extended) break;
   }
   return path;
 }
