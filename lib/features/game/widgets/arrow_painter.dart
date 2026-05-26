@@ -82,7 +82,7 @@ class BoardPainter extends CustomPainter {
     final dotPaint = Paint()..color = kColorDotTrack;
     for (int c = 0; c < cols; c++) {
       for (int r = 0; r < rows; r++) {
-        canvas.drawCircle(m.center(c, r), m.cellSize * 0.028, dotPaint);
+        canvas.drawCircle(m.center(c, r), m.cellSize * 0.032, dotPaint);
       }
     }
 

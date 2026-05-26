@@ -245,9 +245,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
     final screenH = MediaQuery.of(context).size.height;
-    _boardSize = (screenW - 24)
-        .clamp(200.0, screenH * 0.65)
-        .clamp(200.0, 480.0);
+    _boardSize = (screenW - 16)
+        .clamp(200.0, screenH * 0.70)
+        .clamp(200.0, 520.0);
     _metrics = GridMetrics.fit(
       Size(_boardSize, _boardSize),
       _puzzle.cols,

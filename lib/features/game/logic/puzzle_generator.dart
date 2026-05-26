@@ -20,31 +20,13 @@ class _Tier {
   );
 }
 
-// Larger grids + longer snakes = dense, complex-looking boards from level 1.
-// Grid fill targets ~65–75%. Arrow body 3–7 cells gives winding L/S/Z shapes.
+// Larger grids = smaller cells = dots packed tightly like reference game.
+// Short snake bodies (2–5) + high arrow counts = densely filled board.
 const _tiers = [
-  _Tier(8, 14, 20, 3, 5), // tutorial : 8×8  = 64 cells, ~15 arrows × 4 avg = 60
-  _Tier(
-    10,
-    22,
-    30,
-    4,
-    6,
-  ), // easy     : 10×10= 100 cells, ~26 arrows × 5 avg = 130 → pack ~70
-  _Tier(
-    12,
-    30,
-    42,
-    4,
-    7,
-  ), // medium   : 12×12= 144 cells, ~36 arrows × 5 avg = 180 → pack ~70
-  _Tier(
-    14,
-    42,
-    58,
-    4,
-    7,
-  ), // hard     : 14×14= 196 cells, ~50 arrows × 5 avg = 250 → pack ~70
+  _Tier(12, 22, 32, 2, 4), // tutorial : 12×12 = 144 cells
+  _Tier(14, 34, 48, 2, 5), // easy     : 14×14 = 196 cells
+  _Tier(16, 50, 68, 2, 5), // medium   : 16×16 = 256 cells
+  _Tier(18, 70, 90, 2, 5), // hard     : 18×18 = 324 cells
 ];
 
 _Tier _tierForLevel(int level) {
