@@ -84,6 +84,7 @@ jobs:
     name: Build iOS (no-codesign)
     runs-on: macos-latest
     needs: test
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -96,8 +97,21 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Cache CocoaPods specs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cocoapods
+          key: cocoapods-${{ hashFiles('**/Podfile.lock') }}
+          restore-keys: cocoapods-
+
       - name: Get dependencies
         run: flutter pub get
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        env:
+          COCOAPODS_DISABLE_STATS: true
+        run: pod install --repo-update
 
       - name: Build iOS (no code signing)
         run: flutter build ios --no-codesign --debug
