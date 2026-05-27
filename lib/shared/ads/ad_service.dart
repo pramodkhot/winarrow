@@ -1,68 +1,66 @@
-import 'package:facebook_audience_network/facebook_audience_network.dart';
 import 'package:flutter/foundation.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 class AdService {
   AdService._();
   static final AdService instance = AdService._();
 
-  // Replace these with your real placement IDs from Meta Audience Network dashboard.
-  // Test IDs below work on any device during development.
-  static final _rewardedId = kDebugMode
-      ? 'VID_HD_16_9_15S_LINK#2090571174322989_3194357793944319'
-      : 'YOUR_REWARDED_VIDEO_PLACEMENT_ID';
+  // Google's official test IDs — safe to use on any device during development.
+  // TODO: Replace with your real ad unit IDs from https://admob.google.com
+  static final _rewardedAdUnitId = defaultTargetPlatform == TargetPlatform.iOS
+      ? (kDebugMode
+            ? 'ca-app-pub-3940256099942544/1712485313'
+            : 'YOUR_IOS_REWARDED_AD_UNIT_ID')
+      : (kDebugMode
+            ? 'ca-app-pub-3940256099942544/5224354917'
+            : 'YOUR_ANDROID_REWARDED_AD_UNIT_ID');
 
-  bool _loaded = false;
-  VoidCallback? _onRewarded;
+  RewardedAd? _rewardedAd;
 
   Future<void> init() async {
-    await FacebookAudienceNetwork.init();
+    await MobileAds.instance.initialize();
     _preload();
   }
 
   void _preload() {
-    _loaded = false;
-    FacebookRewardedVideoAd.loadRewardedVideoAd(
-      placementId: _rewardedId,
-      listener: _onResult,
+    RewardedAd.load(
+      adUnitId: _rewardedAdUnitId,
+      request: const AdRequest(),
+      rewardedAdLoadCallback: RewardedAdLoadCallback(
+        onAdLoaded: (ad) {
+          _rewardedAd = ad;
+        },
+        onAdFailedToLoad: (_) {
+          _rewardedAd = null;
+        },
+      ),
     );
   }
 
-  void _onResult(RewardedVideoAdResult result, dynamic value) {
-    switch (result) {
-      case RewardedVideoAdResult.LOADED:
-        _loaded = true;
-      case RewardedVideoAdResult.VIDEO_COMPLETE:
-        _loaded = false;
-        final cb = _onRewarded;
-        _onRewarded = null;
-        cb?.call();
-        _preload(); // queue next ad
-      case RewardedVideoAdResult.VIDEO_CLOSED:
-        // Closed without completing — don't reward.
-        _loaded = false;
-        _onRewarded = null;
-        _preload();
-      case RewardedVideoAdResult.ERROR:
-        _loaded = false;
-        // Graceful fallback: grant reward so UX never breaks.
-        final cb = _onRewarded;
-        _onRewarded = null;
-        cb?.call();
-        _preload();
-      default:
-        break;
-    }
-  }
-
-  /// Shows a rewarded ad and calls [onRewarded] when the user completes it.
-  /// If no ad is loaded yet, grants the reward immediately as a fallback.
+  /// Shows a rewarded ad and calls [onRewarded] when the user earns the reward.
+  /// Falls back to immediately granting the reward if no ad is ready.
   void showRewarded({required VoidCallback onRewarded}) {
-    if (!_loaded) {
+    final ad = _rewardedAd;
+    if (ad == null) {
       onRewarded();
       _preload();
       return;
     }
-    _onRewarded = onRewarded;
-    FacebookRewardedVideoAd.showRewardedVideoAd();
+
+    _rewardedAd = null; // consume before showing
+
+    ad.fullScreenContentCallback = FullScreenContentCallback(
+      onAdDismissedFullScreenContent: (a) {
+        a.dispose();
+        _preload();
+      },
+      onAdFailedToShowFullScreenContent: (a, _) {
+        a.dispose();
+        onRewarded(); // graceful fallback
+        _preload();
+      },
+    );
+
+    ad.show(onUserEarnedReward: (_, __) => onRewarded());
   }
 }
